@@ -1,146 +1,149 @@
-# CoVAPSy — Autonomous RC Car
+# CoVAPSy 2026
 
-Autonomous RC car navigation using the **Follow The Gap (FTG)** algorithm and a 360° LiDAR.
-Platform: **Raspberry Pi 4** — Competition: CoVAPSy 2026.
+![Python](https://img.shields.io/badge/language-Python-blue)
+![License](https://img.shields.io/github/license/mahdidou711/covapsy)
+![Last Commit](https://img.shields.io/github/last-commit/mahdidou711/covapsy)
+![Repo Size](https://img.shields.io/github/repo-size/mahdidou711/covapsy)
+
+**Autonomous 1/10-scale RC car — ENS Paris-Saclay CoVAPSy 2026 competition**
 
 ---
 
 ## Hardware
 
-| Component | Details |
-|---|---|
-| SBC | Raspberry Pi 4 |
-| LiDAR | RPLidar A2M12 — 256000 baud — `/dev/ttyUSB0` |
-| ESC | Hobby ESC — PWM 50 Hz — GPIO 12 (channel 0) |
-| Servo | Steering servo — PWM 50 Hz — GPIO 13 (channel 1) |
-| PWM driver | `rpi_hardware_pwm` (hardware PWM) |
-
-### ESC notes
-- **Neutral**: 7.78% duty — **Forward**: above neutral (7.88+)
-- **Reverse**: requires a double-tap sequence (brake → neutral → brake → stable reverse)
-- Reverse is physically confirmed working on this ESC
-
-### LiDAR frame convention
-- `scan[0]` = front, `scan[90]` = left, `scan[270]` = right
-- `0` = no measurement (too close to measure, treat as ~100 mm)
+| Component | Model | Role |
+|---|---|---|
+| Single-board computer | Raspberry Pi 4 | Main compute + communications |
+| Shield | STM32 (CMSIS, no HAL) | Low-level PWM motor/servo control |
+| Lidar | RPLidar A2M12 | 360° distance sensing at 256000 baud |
+| ESC | Hobby-grade brushless ESC | Motor speed control (forward + reverse double-tap) |
+| Servo | Standard RC servo | Steering control (hardware PWM GPIO 12/13) |
 
 ---
 
 ## Software Architecture
 
-```
-main.py             # Main control loop — state machine + stuck detection
-├── ftg.py          # Follow The Gap algorithm
-├── actuators.py    # PWM control: servo, ESC, reverse sequence
-├── lidar_thread.py # LiDAR acquisition thread (RPLidar)
-├── lidar_consumer.py # Non-blocking scan reader
-├── steering.py     # Angle → duty cycle conversion
-└── config.py       # All tunable parameters (only file to edit on race day)
-```
-
-### Control loop (50 Hz)
-
-1. Read latest LiDAR scan
-2. Compute front minimum distance (±15° sector)
-3. If `escape_ticks > 0`: forced forward phase post-reverse
-4. Else: run FTG → compute steering angle + proportional speed
-5. Stuck detection: if front < 400 mm for 25 consecutive ticks → trigger reverse + escape
-
-### Stuck / Reverse / Escape sequence
-
-```
-front_min < STUCK_DIST_MM for STUCK_TICKS ticks
-  → choose open side (left_d vs right_d, treating 0 as 100 mm)
-  → set steering toward open side
-  → reculer() : brake → neutral → brake → stable reverse → T_REVERSE_S → neutral
-  → escape phase: drive forward with same steering for 25 ticks (0.5 s)
-  → cooldown 50 ticks (1 s) before stuck detection resumes
-```
-
----
-
-## Installation (Raspberry Pi)
-
-```bash
-pip install rplidar-roboticia rpi_hardware_pwm
-```
-
-Enable hardware PWM in `/boot/config.txt`:
-```
-dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
-```
-
----
-
-## Deployment
-
-From your dev machine:
-```bash
-scp config.py main.py actuators.py voituree3a6@192.168.123.97:~/covapsy/
-```
-
-Run on the Pi:
-```bash
-python3 main.py
-```
-
-Stop: `Ctrl+C` — cleanly stops PWM and LiDAR motor.
-
----
-
-## Tuning (config.py)
-
-> **Only `config.py` should be modified on race day.**
-
-### Speed
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `VITESSE_MS` | 0.4 m/s | Cruise speed — start at 0.3, increase if stable |
-| `VITESSE_MIN` | 0.28 m/s | Floor speed — do not go below (motor loses torque) |
-
-### FTG
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `D_MIN_MM` | 1500 mm | Safety bubble radius — increase = more conservative |
-| `K_FTG` | 1.0 | Steering gain — increase = more aggressive turns |
-| `FTG_SECTOR_DEG` | 150° | Forward analysis sector — reduce if reacting to side walls |
-
-### Collision / Speed control
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `COLLISION_DIST_MM` | 700 mm | Slowdown threshold — increase to brake earlier in corners |
-| `COLLISION_SECTOR_DEG` | 15° | Front detection sector width |
-
-### Stuck detection & Reverse
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `STUCK_DIST_MM` | 400 mm | Front distance to consider the car stuck |
-| `STUCK_TICKS` | 25 (0.5 s) | Consecutive ticks before triggering reverse |
-| `T_REVERSE_S` | 1.0 s | Reverse duration |
-| `REVERSE_ENGAGE_S` | 0.15 s | Delay between steps of the double-tap sequence |
-
----
-
-## Known Issues / Remaining Work
-
-| Issue | Cause | Planned fix |
-|---|---|---|
-| Corners missed | Not slowing down early enough | Increase `COLLISION_DIST_MM`, lower `VITESSE_MS` |
-| Reverse slow to engage | Double-tap sequence takes ~0.45 s | Reduce `REVERSE_ENGAGE_S` to 0.10 s |
-| After reverse, returns to same stuck point | FTG resumes same angle, escape too short | Longer escape phase, add rear ultrasonic sensor |
-| Rear ultrasonic sensor | No rear distance feedback during reverse | Add HC-SR04 on GPIO → stop reverse when obstacle detected behind |
-
----
-
-## Calibration Tools
-
-| File | Purpose |
+| File | Role |
 |---|---|
-| `cal_servo.py` | Find `SERVO_DUTY_MIN/CENTER/MAX` |
-| `cal_esc_avant.py` | Find `ESC_DUTY_FWD_START` |
-| `cal_esc_reverse.py` | Tune reverse duty values |
-| `cal_lidar.py` | Verify LiDAR angle offsets |
+| `main.py` | Entry point — main control loop, state machine (stuck detection, escape mode) |
+| `ftg.py` | Follow-the-Gap algorithm — gap detection, best gap selection, angle output |
+| `config.py` | **Single source of truth** — all tuning parameters (speed, angles, lidar sectors) |
+| `actuators.py` | PWM control for motor (ESC) and steering servo, reverse double-tap sequence |
+| `lidar_thread.py` | RPLidar A2M12 acquisition thread |
+| `lidar_consumer.py` | Lidar data processing and scan buffer management |
+| `steering.py` | Angle-to-duty-cycle conversion for servo |
+| `cal_servo.py` | Servo calibration script |
+| `cal_esc_avant.py` | Forward ESC calibration script |
+| `cal_esc_reverse.py` | Reverse ESC calibration script |
+| `cal_lidar.py` | Lidar calibration and angle verification script |
+
+---
+
+## Algorithms
+
+### Follow-the-Gap (FTG) — current
+The car uses a gap-based reactive navigation algorithm:
+1. Extract a forward lidar sector (`FTG_SECTOR_DEG`)
+2. Detect free gaps (distances above threshold)
+3. Select the best gap by average depth
+4. Steer toward the gap center, with proportional speed reduction based on frontal distance
+
+**Stuck detection**: if `front_min < STUCK_DIST_MM` for `STUCK_TICKS` consecutive ticks → trigger reverse + escape maneuver.
+
+**Escape mode**: after reversing, force steering toward the open side for `escape_ticks` ticks, then hand back control to FTG.
+
+### Planned — PPO sim-to-real transfer
+- Train a PPO agent (Stable-Baselines3) in Webots simulation
+- Transfer policy weights to the RPi 4 for real-world inference
+- Curriculum: oval track → chicanes → full race track
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/mahdidou711/covapsy.git
+cd covapsy
+pip install -r requirements.txt
+```
+
+> **Note**: must run on a Raspberry Pi 4 with the RPLidar connected on `/dev/ttyUSB0` and hardware PWM enabled on GPIO 12 and GPIO 13.
+
+---
+
+## Usage
+
+### Run the car
+```bash
+python main.py
+```
+
+### Calibration (run once before first use)
+```bash
+python cal_servo.py        # find servo CENTER, MIN, MAX duty cycles
+python cal_esc_avant.py    # find ESC NEUTRAL and FWD_START duty cycles
+python cal_esc_reverse.py  # find ESC reverse duty cycles and double-tap timing
+python cal_lidar.py        # verify lidar angle mapping (scan[0]=front, scan[90]=left)
+```
+
+---
+
+## Configuration
+
+All tuning parameters are centralized in `config.py`. **This is the only file to edit on race day.**
+
+Key parameters:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `VITESSE_MS` | 0.4 | Target forward speed (m/s) |
+| `VITESSE_MIN` | 0.28 | Minimum speed (ESC deadband floor) |
+| `COLLISION_DIST_MM` | 700 | Distance at which speed starts reducing |
+| `STUCK_DIST_MM` | 400 | Front distance threshold to declare stuck |
+| `STUCK_TICKS` | 25 | Consecutive ticks below threshold to trigger reverse |
+| `FTG_SECTOR_DEG` | 150 | Forward lidar sector width for FTG |
+| `T_REVERSE_S` | 1.0 | Reverse duration (seconds) |
+
+---
+
+## Project Structure
+
+```
+covapsy/
+├── main.py               # Main control loop
+├── ftg.py                # Follow-the-Gap algorithm
+├── config.py             # All tuning parameters
+├── actuators.py          # Motor + servo PWM control
+├── lidar_thread.py       # Lidar acquisition
+├── lidar_consumer.py     # Lidar data processing
+├── steering.py           # Servo angle conversion
+├── cal_servo.py          # Servo calibration
+├── cal_esc_avant.py      # Forward ESC calibration
+├── cal_esc_reverse.py    # Reverse ESC calibration
+├── cal_lidar.py          # Lidar calibration
+├── requirements.txt      # Python dependencies
+└── .github/
+    ├── workflows/
+    │   └── lint.yml      # CI: flake8 linting
+    └── ISSUE_TEMPLATE/   # Bug report / feature request templates
+```
+
+---
+
+## Roadmap
+
+- [ ] PID lateral controller (wall-following complement to FTG)
+- [ ] PPO training in Webots simulation
+- [ ] Sim-to-real policy transfer
+- [ ] Rear ultrasonic sensor for safe reverse maneuvers
+- [ ] Multi-car avoidance / overtaking
+
+---
+
+## Author
+
+**mahdidou711** — ENS Paris-Saclay, CoVAPSy 2026
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
